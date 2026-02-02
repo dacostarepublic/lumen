@@ -20,7 +20,7 @@ A terminal-first wallpaper manager for macOS. Inspired by [Irvue](https://irvue.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/lumen.git
+git clone https://github.com/dacostarepublic/lumen.git
 cd lumen
 
 # Build the release binary
