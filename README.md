@@ -20,8 +20,10 @@ A terminal-first wallpaper manager for macOS. Inspired by [Irvue](https://irvue.
 
 ```bash
 brew tap dacostarepublic/tap
-brew install lumen
+brew install --formula lumen
 ```
+
+`lumen` is also the name of an existing Homebrew cask app, so `--formula` ensures you get this CLI tool from the tap.
 
 Upgrade with:
 
