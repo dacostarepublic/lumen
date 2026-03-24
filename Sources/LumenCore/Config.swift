@@ -7,12 +7,14 @@ public enum RotationMode: String, Codable, CaseIterable, Sendable {
     case random = "random"
     case sequential = "sequential"
     case noRepeat = "no-repeat"
+    case weightedRandom = "weighted-random"
     
     public var description: String {
         switch self {
         case .random: return "Random selection"
         case .sequential: return "Sequential order"
         case .noRepeat: return "No repeats until all shown"
+        case .weightedRandom: return "Weighted random (prefer less-shown images)"
         }
     }
 }
@@ -47,11 +49,21 @@ public struct ScreenConfig: Codable, Equatable, Sendable {
     public var imagesFolder: String?
     public var rotationMode: RotationMode?
     public var fitStyle: FitStyle?
+    public var recursive: Bool?
+    public var preferMatchingAspect: Bool?
     
-    public init(imagesFolder: String? = nil, rotationMode: RotationMode? = nil, fitStyle: FitStyle? = nil) {
+    public init(
+        imagesFolder: String? = nil,
+        rotationMode: RotationMode? = nil,
+        fitStyle: FitStyle? = nil,
+        recursive: Bool? = nil,
+        preferMatchingAspect: Bool? = nil
+    ) {
         self.imagesFolder = imagesFolder
         self.rotationMode = rotationMode
         self.fitStyle = fitStyle
+        self.recursive = recursive
+        self.preferMatchingAspect = preferMatchingAspect
     }
 }
 
@@ -61,7 +73,9 @@ public struct LumenConfig: Codable, Equatable, Sendable {
     public var imagesFolder: String
     public var rotationMode: RotationMode
     public var fitStyle: FitStyle
-    public var interval: Int  // In minutes, for documentation purposes
+    public var interval: Int  // In minutes
+    public var recursive: Bool
+    public var preferMatchingAspect: Bool
     
     // Storage locations
     public var dataDirectory: String
@@ -94,6 +108,8 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         rotationMode: RotationMode = .random,
         fitStyle: FitStyle = .fill,
         interval: Int = 30,
+        recursive: Bool = true,
+        preferMatchingAspect: Bool = false,
         dataDirectory: String = "~/Library/Application Support/lumen",
         favoritesFolder: String = "~/Pictures/Wallpapers/Favorites",
         blacklistStrategy: BlacklistStrategy = .list,
@@ -106,6 +122,8 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         self.rotationMode = rotationMode
         self.fitStyle = fitStyle
         self.interval = interval
+        self.recursive = recursive
+        self.preferMatchingAspect = preferMatchingAspect
         self.dataDirectory = dataDirectory
         self.favoritesFolder = favoritesFolder
         self.blacklistStrategy = blacklistStrategy
@@ -120,6 +138,8 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         case rotationMode
         case fitStyle
         case interval
+        case recursive
+        case preferMatchingAspect
         case dataDirectory
         case favoritesFolder
         case blacklistStrategy
@@ -135,6 +155,8 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         rotationMode = try container.decode(RotationMode.self, forKey: .rotationMode)
         fitStyle = try container.decode(FitStyle.self, forKey: .fitStyle)
         interval = try container.decode(Int.self, forKey: .interval)
+        recursive = try container.decodeIfPresent(Bool.self, forKey: .recursive) ?? true
+        preferMatchingAspect = try container.decodeIfPresent(Bool.self, forKey: .preferMatchingAspect) ?? false
         dataDirectory = try container.decode(String.self, forKey: .dataDirectory)
         favoritesFolder = try container.decode(String.self, forKey: .favoritesFolder)
         blacklistStrategy = try container.decode(BlacklistStrategy.self, forKey: .blacklistStrategy)
@@ -157,6 +179,16 @@ public struct LumenConfig: Codable, Equatable, Sendable {
     /// Get effective fit style for a screen
     public func fitStyleForScreen(_ screenId: String) -> FitStyle {
         return screens[screenId]?.fitStyle ?? fitStyle
+    }
+
+    /// Get effective recursion setting for a screen
+    public func recursiveForScreen(_ screenId: String) -> Bool {
+        return screens[screenId]?.recursive ?? recursive
+    }
+
+    /// Get effective aspect preference setting for a screen
+    public func preferMatchingAspectForScreen(_ screenId: String) -> Bool {
+        return screens[screenId]?.preferMatchingAspect ?? preferMatchingAspect
     }
     
     /// Expand all tilde paths to full paths

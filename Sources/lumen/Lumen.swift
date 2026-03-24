@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import ArgumentParser
 import LumenCore
 
@@ -16,14 +17,17 @@ struct Lumen: ParsableCommand {
             Configuration is stored in ~/.lumen-config (JSON format).
             Run 'lumen config init' to create a default configuration.
             """,
-        version: "1.1.0",
+        version: "2.0.0",
         subcommands: [
+            Daemon.self,
             Update.self,
             Set.self,
             Status.self,
             Prev.self,
             Favorite.self,
             Ban.self,
+            Unban.self,
+            Open.self,
             Config.self,
             History.self,
             List.self
@@ -113,68 +117,15 @@ struct Update: ParsableCommand {
     mutating func run() throws {
         let config = try loadConfig(global.config)
         let stateManager = try StateManager(config: config)
-        let selector = ImageSelector(config: config, stateManager: stateManager)
-        
-        let monitors = MonitorManager.getMonitors()
-        if monitors.isEmpty {
-            throw MonitorError.noMonitorsFound
-        }
-        
-        var results: [UpdateResult] = []
-        
-        // Determine which screens to update
-        let screensToUpdate: [MonitorInfo]
-        if all || !screenSelector.hasSelection {
-            screensToUpdate = monitors
-        } else {
-            screensToUpdate = [try screenSelector.resolveMonitor()]
-        }
-        
-        // Track already-selected images to ensure different wallpapers per screen
-        var alreadySelected = Swift.Set<String>()
-        
-        for monitor in screensToUpdate {
-            do {
-                // Pass already-selected images to exclude them from selection
-                let selected = try selector.selectNext(for: monitor.id, excluding: alreadySelected, dryRun: dryRun)
-                let fitStyle = config.fitStyleForScreen(monitor.id)
-                
-                // Add to exclusion set for subsequent screens
-                alreadySelected.insert(selected)
-                
-                if !dryRun {
-                    try MonitorManager.setWallpaper(for: monitor.id, imagePath: selected, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
-                    try stateManager.recordWallpaperChange(screenId: monitor.id, path: selected)
-                }
-                
-                results.append(UpdateResult(
-                    screenIndex: monitor.index,
-                    screenId: monitor.id,
-                    screenName: monitor.name,
-                    imagePath: selected,
-                    fitStyle: fitStyle,
-                    success: true,
-                    error: nil
-                ))
-                
-                if global.verbose && !global.json {
-                    print("[\(monitor.index)] \(monitor.name): \(selected)")
-                }
-            } catch {
-                if global.verbose && !global.json {
-                    printError("[\(monitor.index)] \(monitor.name): \(error)")
-                }
-                results.append(UpdateResult(
-                    screenIndex: monitor.index,
-                    screenId: monitor.id,
-                    screenName: monitor.name,
-                    imagePath: nil,
-                    fitStyle: config.fitStyleForScreen(monitor.id),
-                    success: false,
-                    error: String(describing: error)
-                ))
-            }
-        }
+        let results = try performUpdateCycle(
+            config: config,
+            stateManager: stateManager,
+            screenSelector: screenSelector,
+            updateAll: all,
+            dryRun: dryRun,
+            verbose: global.verbose,
+            json: global.json
+        )
 
         let hadFailures = results.contains { !$0.success }
         
@@ -227,6 +178,94 @@ struct UpdateOutput: Codable {
     }
 }
 
+func performUpdateCycle(
+    config: LumenConfig,
+    stateManager: StateManager,
+    screenSelector: ScreenSelector? = nil,
+    updateAll: Bool,
+    dryRun: Bool,
+    verbose: Bool,
+    json: Bool
+) throws -> [UpdateResult] {
+    try stateManager.refresh()
+    let selector = ImageSelector(config: config, stateManager: stateManager)
+
+    let monitors = MonitorManager.getMonitors()
+    if monitors.isEmpty {
+        throw MonitorError.noMonitorsFound
+    }
+
+    // Determine which screens to update
+    let screensToUpdate: [MonitorInfo]
+    if updateAll || !(screenSelector?.hasSelection ?? false) {
+        screensToUpdate = monitors
+    } else if let screenSelector {
+        screensToUpdate = [try screenSelector.resolveMonitor()]
+    } else {
+        screensToUpdate = monitors
+    }
+
+    var results: [UpdateResult] = []
+
+    // Track already-selected images to ensure different wallpapers per screen
+    var alreadySelected = Swift.Set<String>()
+
+    for monitor in screensToUpdate {
+        do {
+            let selected = try selector.selectNext(
+                for: monitor.id,
+                excluding: alreadySelected,
+                dryRun: dryRun,
+                monitorWidth: monitor.width,
+                monitorHeight: monitor.height
+            )
+            let fitStyle = config.fitStyleForScreen(monitor.id)
+
+            // Add to exclusion set for subsequent screens
+            alreadySelected.insert(selected)
+
+            if !dryRun {
+                try MonitorManager.setWallpaper(
+                    for: monitor.id,
+                    imagePath: selected,
+                    fitStyle: fitStyle,
+                    syncAllSpaces: config.applyAllSpaces
+                )
+                try stateManager.recordWallpaperChange(screenId: monitor.id, path: selected)
+            }
+
+            results.append(UpdateResult(
+                screenIndex: monitor.index,
+                screenId: monitor.id,
+                screenName: monitor.name,
+                imagePath: selected,
+                fitStyle: fitStyle,
+                success: true,
+                error: nil
+            ))
+
+            if verbose && !json {
+                print("[\(monitor.index)] \(monitor.name): \(selected)")
+            }
+        } catch {
+            if verbose && !json {
+                printError("[\(monitor.index)] \(monitor.name): \(error)")
+            }
+            results.append(UpdateResult(
+                screenIndex: monitor.index,
+                screenId: monitor.id,
+                screenName: monitor.name,
+                imagePath: nil,
+                fitStyle: config.fitStyleForScreen(monitor.id),
+                success: false,
+                error: String(describing: error)
+            ))
+        }
+    }
+
+    return results
+}
+
 // MARK: - Set Command
 
 struct Set: ParsableCommand {
@@ -237,8 +276,11 @@ struct Set: ParsableCommand {
     @OptionGroup var global: GlobalOptions
     @OptionGroup var screenSelector: ScreenSelector
     
-    @Option(name: .long, help: "Path to image file")
-    var file: String
+    @Argument(help: "Path to image file")
+    var file: String?
+
+    @Option(name: .customLong("file"), help: "[Deprecated] Path to image file")
+    var legacyFile: String?
     
     @Option(name: .long, help: "Fit style (fill/fit/stretch/center/tile)")
     var fit: FitStyle?
@@ -250,8 +292,20 @@ struct Set: ParsableCommand {
         let monitor = try screenSelector.resolveMonitor()
         let fitStyle = fit ?? config.fitStyleForScreen(monitor.id)
         
+        let inputPath: String
+        switch (file, legacyFile) {
+        case let (.some(argumentPath), nil):
+            inputPath = argumentPath
+        case let (nil, .some(optionPath)):
+            inputPath = optionPath
+        case (.some, .some):
+            throw ValidationError("Specify wallpaper path as positional argument or --file, not both")
+        case (nil, nil):
+            throw ValidationError("Missing required wallpaper path")
+        }
+
         // Expand path
-        let expandedPath = (file as NSString).expandingTildeInPath
+        let expandedPath = (inputPath as NSString).expandingTildeInPath
         
         // Set wallpaper
         try MonitorManager.setWallpaper(for: monitor.id, imagePath: expandedPath, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
@@ -296,6 +350,11 @@ struct Status: ParsableCommand {
         // Try to load config for additional info
         let config = try? loadConfig(global.config)
         let stateManager = config.flatMap { try? StateManager(config: $0) }
+        let selector: ImageSelector? = {
+            guard let config, let stateManager else { return nil }
+            return ImageSelector(config: config, stateManager: stateManager)
+        }()
+        var imageCache: [String: [String]] = [:]
         
         var statusList: [ScreenStatus] = []
         
@@ -304,9 +363,32 @@ struct Status: ParsableCommand {
             let currentWallpaper = monitor.currentWallpaper ?? storedWallpaper
             var nextCandidate: String? = nil
             
-            if let config = config, let stateManager = stateManager {
-                let selector = ImageSelector(config: config, stateManager: stateManager)
-                nextCandidate = try? selector.selectNext(for: monitor.id, dryRun: true)
+            if let config = config, let selector = selector {
+                let folder = config.imagesFolderForScreen(monitor.id)
+                let recursive = config.recursiveForScreen(monitor.id)
+                let cacheKey = "\(folder)|\(recursive)"
+
+                let images: [String]
+                if let cached = imageCache[cacheKey] {
+                    images = cached
+                } else if let discovered = try? ImageDiscovery.getImages(in: folder, recursive: recursive) {
+                    imageCache[cacheKey] = discovered
+                    images = discovered
+                } else {
+                    images = []
+                }
+
+                if !images.isEmpty {
+                    let mode = config.rotationModeForScreen(monitor.id)
+                    nextCandidate = try? selector.selectNextFrom(
+                        images: images,
+                        screenId: monitor.id,
+                        mode: mode,
+                        dryRun: true,
+                        monitorWidth: monitor.width,
+                        monitorHeight: monitor.height
+                    )
+                }
             }
             
             let status = ScreenStatus(
@@ -527,6 +609,146 @@ struct Ban: ParsableCommand {
     }
 }
 
+// MARK: - Unban Command
+
+struct Unban: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove wallpaper(s) from blacklist"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    @Option(name: .long, help: "Path to image file to unban")
+    var file: String?
+
+    @Flag(name: .long, help: "Unban the most recently blacklisted image")
+    var last: Bool = false
+
+    @Flag(name: .long, help: "Clear the entire blacklist")
+    var all: Bool = false
+
+    mutating func run() throws {
+        let selectedModes = [file != nil, last, all].filter { $0 }.count
+        guard selectedModes == 1 else {
+            throw ValidationError("Specify exactly one of --file, --last, or --all")
+        }
+
+        let config = try loadConfig(global.config)
+        let stateManager = try StateManager(config: config)
+
+        if let file {
+            let expandedPath = (file as NSString).expandingTildeInPath
+            let wasBlacklisted = stateManager.getBlacklistedPaths().contains(expandedPath)
+            try stateManager.removeFromBlacklist(expandedPath)
+
+            if global.json {
+                let output: [String: Any] = [
+                    "mode": "file",
+                    "path": expandedPath,
+                    "removed": wasBlacklisted
+                ]
+                print(try jsonString(from: output))
+            } else {
+                if wasBlacklisted {
+                    print("Unbanned: \((expandedPath as NSString).lastPathComponent)")
+                } else {
+                    print("Path was not blacklisted: \(expandedPath)")
+                }
+            }
+            return
+        }
+
+        if last {
+            let removed = try stateManager.removeMostRecentBlacklisted()
+            if global.json {
+                let output: [String: Any] = [
+                    "mode": "last",
+                    "path": removed?.path as Any,
+                    "removed": removed != nil
+                ]
+                print(try jsonString(from: output))
+            } else {
+                if let removed {
+                    print("Unbanned last: \((removed.path as NSString).lastPathComponent)")
+                } else {
+                    print("Blacklist is already empty")
+                }
+            }
+            return
+        }
+
+        let removedCount = try stateManager.clearBlacklist()
+        if global.json {
+            let output: [String: Any] = [
+                "mode": "all",
+                "removed_count": removedCount
+            ]
+            print(try jsonString(from: output))
+        } else {
+            print("Cleared blacklist (removed \(removedCount) entr\(removedCount == 1 ? "y" : "ies"))")
+        }
+    }
+}
+
+// MARK: - Open Command
+
+enum OpenTarget: String, ExpressibleByArgument {
+    case finder
+    case preview
+}
+
+struct Open: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Open current wallpaper in Finder or Preview"
+    )
+
+    @OptionGroup var global: GlobalOptions
+    @OptionGroup var screenSelector: ScreenSelector
+
+    @Option(name: .long, help: "Open target: finder or preview")
+    var target: OpenTarget = .finder
+
+    mutating func run() throws {
+        let config = try loadConfig(global.config)
+        let stateManager = try StateManager(config: config)
+        let monitor = try screenSelector.resolveMonitor()
+
+        guard let imagePath = monitor.currentWallpaper ?? stateManager.getCurrentWallpaper(for: monitor.id) else {
+            throw ValidationError("No current wallpaper known for screen \(monitor.index)")
+        }
+
+        guard FileManager.default.fileExists(atPath: imagePath) else {
+            throw MonitorError.imageNotFound(path: imagePath)
+        }
+
+        let opened: Bool
+        switch target {
+        case .finder:
+            opened = NSWorkspace.shared.selectFile(imagePath, inFileViewerRootedAtPath: "")
+        case .preview:
+            let fileURL = URL(fileURLWithPath: imagePath)
+            opened = NSWorkspace.shared.open(fileURL)
+        }
+
+        guard opened else {
+            throw ValidationError("Could not open wallpaper in \(target.rawValue)")
+        }
+
+        if global.json {
+            let output: [String: Any] = [
+                "screen_index": monitor.index,
+                "screen_id": monitor.id,
+                "screen_name": monitor.name,
+                "image_path": imagePath,
+                "target": target.rawValue
+            ]
+            print(try jsonString(from: output))
+        } else {
+            print("Opened in \(target.rawValue): \((imagePath as NSString).lastPathComponent)")
+        }
+    }
+}
+
 // MARK: - Config Command
 
 struct Config: ParsableCommand {
@@ -563,7 +785,7 @@ struct ConfigInit: ParsableCommand {
                 print("Created configuration file at: \(createdPath)")
                 print("\nEdit this file to customize your settings:")
                 print("  - Set 'images_folder' to your wallpapers directory")
-                print("  - Choose rotation mode: random, sequential, or no-repeat")
+                print("  - Choose rotation mode: random, sequential, no-repeat, or weighted-random")
                 print("  - Configure per-screen settings if needed")
                 print("\nRun 'lumen status' to see detected screens.")
             }
@@ -695,10 +917,17 @@ struct List: ParsableCommand {
     
     @Flag(name: .long, help: "List blacklisted images")
     var blacklist: Bool = false
+
+    @Option(name: .long, help: "Remove this path from blacklist instead of listing")
+    var remove: String?
     
     mutating func run() throws {
         if favorites == blacklist {
             throw ValidationError("Specify exactly one of --favorites or --blacklist")
+        }
+
+        if remove != nil && !blacklist {
+            throw ValidationError("--remove can only be used with --blacklist")
         }
 
         let config = try loadConfig(global.config)
@@ -727,6 +956,25 @@ struct List: ParsableCommand {
                 }
             }
         } else if blacklist {
+            if let remove {
+                let expandedPath = (remove as NSString).expandingTildeInPath
+                let wasBlacklisted = stateManager.getBlacklistedPaths().contains(expandedPath)
+                try stateManager.removeFromBlacklist(expandedPath)
+
+                if global.json {
+                    let output: [String: Any] = [
+                        "path": expandedPath,
+                        "removed": wasBlacklisted
+                    ]
+                    print(try jsonString(from: output))
+                } else if wasBlacklisted {
+                    print("Removed from blacklist: \((expandedPath as NSString).lastPathComponent)")
+                } else {
+                    print("Path was not blacklisted: \(expandedPath)")
+                }
+                return
+            }
+
             let banned = stateManager.getBlacklist()
             if global.json {
                 let encoder = JSONEncoder()

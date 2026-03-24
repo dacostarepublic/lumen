@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 // MARK: - Image Discovery
 
@@ -87,12 +88,19 @@ public class ImageSelector {
     ///   - excluding: Set of image paths to exclude (e.g., already selected for other screens)
     ///   - dryRun: If true, don't update state
     /// - Returns: Path to selected image
-    public func selectNext(for screenId: String, excluding: Set<String> = [], dryRun: Bool = false) throws -> String {
+    public func selectNext(
+        for screenId: String,
+        excluding: Set<String> = [],
+        dryRun: Bool = false,
+        monitorWidth: Int? = nil,
+        monitorHeight: Int? = nil
+    ) throws -> String {
         let folder = config.imagesFolderForScreen(screenId)
         let mode = config.rotationModeForScreen(screenId)
+        let recursive = config.recursiveForScreen(screenId)
         
         // Get all available images
-        var images = try ImageDiscovery.getImages(in: folder)
+        var images = try ImageDiscovery.getImages(in: folder, recursive: recursive)
         
         // Filter out blacklisted images
         let blacklist = stateManager.getBlacklistedPaths()
@@ -109,18 +117,44 @@ public class ImageSelector {
         let selected: String
         switch mode {
         case .random:
-            selected = try selectRandom(from: images, screenId: screenId)
+            selected = try selectRandom(
+                from: images,
+                screenId: screenId,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
         case .sequential:
             selected = try selectSequential(from: images, screenId: screenId, dryRun: dryRun, excluding: excluding)
         case .noRepeat:
-            selected = try selectNoRepeat(from: images, screenId: screenId, dryRun: dryRun)
+            selected = try selectNoRepeat(
+                from: images,
+                screenId: screenId,
+                dryRun: dryRun,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
+        case .weightedRandom:
+            selected = try selectWeightedRandom(
+                from: images,
+                screenId: screenId,
+                dryRun: dryRun,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
         }
         
         return selected
     }
     
     /// Select next image from a given list (for testing)
-    public func selectNextFrom(images: [String], screenId: String, mode: RotationMode, dryRun: Bool = false) throws -> String {
+    public func selectNextFrom(
+        images: [String],
+        screenId: String,
+        mode: RotationMode,
+        dryRun: Bool = false,
+        monitorWidth: Int? = nil,
+        monitorHeight: Int? = nil
+    ) throws -> String {
         let blacklist = stateManager.getBlacklistedPaths()
         let filteredImages = images.filter { !blacklist.contains($0) }
         
@@ -130,17 +164,48 @@ public class ImageSelector {
         
         switch mode {
         case .random:
-            return try selectRandom(from: filteredImages, screenId: screenId)
+            return try selectRandom(
+                from: filteredImages,
+                screenId: screenId,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
         case .sequential:
             return try selectSequential(from: filteredImages, screenId: screenId, dryRun: dryRun)
         case .noRepeat:
-            return try selectNoRepeat(from: filteredImages, screenId: screenId, dryRun: dryRun)
+            return try selectNoRepeat(
+                from: filteredImages,
+                screenId: screenId,
+                dryRun: dryRun,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
+        case .weightedRandom:
+            return try selectWeightedRandom(
+                from: filteredImages,
+                screenId: screenId,
+                dryRun: dryRun,
+                monitorWidth: monitorWidth,
+                monitorHeight: monitorHeight
+            )
         }
     }
     
     /// Random selection - pure random from available images
-    private func selectRandom(from images: [String], screenId: String) throws -> String {
-        guard let selected = images.randomElement() else {
+    private func selectRandom(
+        from images: [String],
+        screenId: String,
+        monitorWidth: Int?,
+        monitorHeight: Int?
+    ) throws -> String {
+        let candidates = preferredCandidates(
+            from: images,
+            screenId: screenId,
+            monitorWidth: monitorWidth,
+            monitorHeight: monitorHeight
+        )
+
+        guard let selected = candidates.randomElement() else {
             throw SelectionError.noImagesAvailable(folder: config.imagesFolderForScreen(screenId))
         }
         return selected
@@ -176,7 +241,13 @@ public class ImageSelector {
     }
     
     /// No-repeat selection - random but don't repeat until all shown
-    private func selectNoRepeat(from images: [String], screenId: String, dryRun: Bool) throws -> String {
+    private func selectNoRepeat(
+        from images: [String],
+        screenId: String,
+        dryRun: Bool,
+        monitorWidth: Int?,
+        monitorHeight: Int?
+    ) throws -> String {
         var shown = stateManager.getShownImages(for: screenId)
         
         // Filter to only unshown images
@@ -192,11 +263,110 @@ public class ImageSelector {
         }
         
         // Select randomly from available
-        guard let selected = available.randomElement() else {
+        let candidates = preferredCandidates(
+            from: available,
+            screenId: screenId,
+            monitorWidth: monitorWidth,
+            monitorHeight: monitorHeight
+        )
+
+        guard let selected = candidates.randomElement() else {
             throw SelectionError.noImagesAvailable(folder: config.imagesFolderForScreen(screenId))
         }
         
         return selected
+    }
+
+    /// Weighted-random selection - prefer images with lower historical selection count
+    private func selectWeightedRandom(
+        from images: [String],
+        screenId: String,
+        dryRun: Bool,
+        monitorWidth: Int?,
+        monitorHeight: Int?
+    ) throws -> String {
+        let candidates = preferredCandidates(
+            from: images,
+            screenId: screenId,
+            monitorWidth: monitorWidth,
+            monitorHeight: monitorHeight
+        )
+
+        if !dryRun {
+            try stateManager.pruneSelectionCounts(for: screenId, validPaths: Set(images))
+        }
+
+        let counts = stateManager.getSelectionCounts(for: screenId)
+        let weighted = candidates.map { imagePath in
+            let count = counts[imagePath] ?? 0
+            let weight = 1.0 / Double(count + 1)
+            return (path: imagePath, weight: weight)
+        }
+
+        let totalWeight = weighted.reduce(0.0) { $0 + $1.weight }
+        guard totalWeight > 0 else {
+            throw SelectionError.noImagesAvailable(folder: config.imagesFolderForScreen(screenId))
+        }
+
+        var target = Double.random(in: 0..<totalWeight)
+        for entry in weighted {
+            target -= entry.weight
+            if target <= 0 {
+                return entry.path
+            }
+        }
+
+        return weighted.last!.path
+    }
+
+    private func preferredCandidates(
+        from images: [String],
+        screenId: String,
+        monitorWidth: Int?,
+        monitorHeight: Int?
+    ) -> [String] {
+        guard config.preferMatchingAspectForScreen(screenId),
+              let monitorWidth,
+              let monitorHeight,
+              monitorWidth > 0,
+              monitorHeight > 0 else {
+            return images
+        }
+
+        let targetAspect = Double(monitorWidth) / Double(monitorHeight)
+        let tolerance = 0.10
+
+        var matching: [String] = []
+        for path in images {
+            guard let imageAspect = imageAspectRatio(for: path) else {
+                continue
+            }
+
+            let relativeDiff = abs(imageAspect - targetAspect) / targetAspect
+            if relativeDiff <= tolerance {
+                matching.append(path)
+            }
+        }
+
+        return matching.isEmpty ? images : matching
+    }
+
+    private func imageAspectRatio(for path: String) -> Double? {
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let widthValue = props[kCGImagePropertyPixelWidth] as? NSNumber,
+              let heightValue = props[kCGImagePropertyPixelHeight] as? NSNumber else {
+            return nil
+        }
+
+        let width = widthValue.doubleValue
+        let height = heightValue.doubleValue
+        guard width > 0, height > 0 else {
+            return nil
+        }
+
+        return width / height
     }
     
     /// Get a preview of what would be selected (dry run)
@@ -204,9 +374,10 @@ public class ImageSelector {
         let folder = config.imagesFolderForScreen(screenId)
         let mode = config.rotationModeForScreen(screenId)
         let fitStyle = config.fitStyleForScreen(screenId)
+        let recursive = config.recursiveForScreen(screenId)
         
         // Get all available images
-        var images = try ImageDiscovery.getImages(in: folder)
+        var images = try ImageDiscovery.getImages(in: folder, recursive: recursive)
         let blacklist = stateManager.getBlacklistedPaths()
         images = images.filter { !blacklist.contains($0) }
         
@@ -270,4 +441,3 @@ public enum SelectionError: Error, CustomStringConvertible {
         }
     }
 }
-

@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 .DEFAULT_GOAL := help
 
-VERSION ?= 1.1.0
+VERSION ?= 2.0.0
 ARTIFACT_NAME := lumen-v$(VERSION)-macos.tar.gz
 ARTIFACT_PATH := dist/$(ARTIFACT_NAME)
 
@@ -15,7 +15,7 @@ help:
 	@printf "  make test              Run unit tests\n"
 	@printf "  make ci                Run release build + tests\n"
 	@printf "  make smoke             Run CLI smoke checks\n"
-	@printf "  make release-artifact VERSION=1.1.0\n"
+	@printf "  make release-artifact VERSION=2.0.0\n"
 	@printf "                         Build and package release artifact\n"
 	@printf "  make clean             Remove build and dist artifacts\n"
 

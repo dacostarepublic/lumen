@@ -46,6 +46,39 @@ final class ImageSelectorTests: XCTestCase {
         let images = try ImageDiscovery.getImages(in: tempDir.path)
         XCTAssertEqual(images.count, 5)
     }
+
+    func testRecursiveDiscoveryToggle() throws {
+        let parentDir = tempDir.appendingPathComponent("recursive-only")
+        let nestedDir = parentDir.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
+
+        let nestedImage = nestedDir.appendingPathComponent("nested.jpg")
+        let placeholderData = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        try placeholderData.write(to: nestedImage)
+
+        let nonRecursiveConfig = LumenConfig(
+            imagesFolder: parentDir.path,
+            rotationMode: .random,
+            recursive: false,
+            dataDirectory: tempDir.appendingPathComponent("data-non-recursive").path
+        )
+        let nonRecursiveState = try StateManager(config: nonRecursiveConfig)
+        let nonRecursiveSelector = ImageSelector(config: nonRecursiveConfig, stateManager: nonRecursiveState)
+
+        XCTAssertThrowsError(try nonRecursiveSelector.selectNext(for: "screen1", dryRun: true))
+
+        let recursiveConfig = LumenConfig(
+            imagesFolder: parentDir.path,
+            rotationMode: .random,
+            recursive: true,
+            dataDirectory: tempDir.appendingPathComponent("data-recursive").path
+        )
+        let recursiveState = try StateManager(config: recursiveConfig)
+        let recursiveSelector = ImageSelector(config: recursiveConfig, stateManager: recursiveState)
+
+        let selected = try recursiveSelector.selectNext(for: "screen1", dryRun: true)
+        XCTAssertEqual(selected, nestedImage.path)
+    }
     
     func testImageDiscoverySupportsMultipleFormats() {
         let supported = ImageDiscovery.supportedExtensions
@@ -117,6 +150,53 @@ final class ImageSelectorTests: XCTestCase {
         // With 5 images and 50 selections, we should get at least 2 different ones
         // (extremely unlikely to always get the same one)
         XCTAssertGreaterThan(selections.count, 1)
+    }
+
+    func testWeightedRandomPrefersLessShownImages() throws {
+        let weightedConfig = LumenConfig(
+            imagesFolder: tempDir.path,
+            rotationMode: .weightedRandom,
+            dataDirectory: tempDir.appendingPathComponent("data-weighted").path
+        )
+        let weightedState = try StateManager(config: weightedConfig)
+        let weightedSelector = ImageSelector(config: weightedConfig, stateManager: weightedState)
+
+        let images = try ImageDiscovery.getImages(in: tempDir.path).sorted()
+        let overused = images[0]
+
+        for _ in 0..<40 {
+            try weightedState.recordWallpaperChange(screenId: "screen1", path: overused)
+        }
+
+        var overusedHits = 0
+        for _ in 0..<400 {
+            let selected = try weightedSelector.selectNext(for: "screen1", dryRun: true)
+            if selected == overused {
+                overusedHits += 1
+            }
+        }
+
+        XCTAssertLessThan(overusedHits, 50)
+    }
+
+    func testWeightedRandomDryRunDoesNotMutateCounts() throws {
+        let weightedConfig = LumenConfig(
+            imagesFolder: tempDir.path,
+            rotationMode: .weightedRandom,
+            dataDirectory: tempDir.appendingPathComponent("data-weighted-dry-run").path
+        )
+        let weightedState = try StateManager(config: weightedConfig)
+        let weightedSelector = ImageSelector(config: weightedConfig, stateManager: weightedState)
+
+        let images = try ImageDiscovery.getImages(in: tempDir.path).sorted()
+        try weightedState.recordWallpaperChange(screenId: "screen1", path: images[0])
+
+        let before = weightedState.getSelectionCounts(for: "screen1")
+        _ = try weightedSelector.selectNext(for: "screen1", dryRun: true)
+        _ = try weightedSelector.selectNext(for: "screen1", dryRun: true)
+        let after = weightedState.getSelectionCounts(for: "screen1")
+
+        XCTAssertEqual(before, after)
     }
     
     // MARK: - Sequential Selection Tests
@@ -346,4 +426,3 @@ final class ImageSelectorTests: XCTestCase {
         XCTAssertNotNil(preview.nextWallpaper)
     }
 }
-

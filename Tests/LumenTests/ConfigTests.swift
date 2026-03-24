@@ -12,6 +12,8 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.rotationMode, .random)
         XCTAssertEqual(config.fitStyle, .fill)
         XCTAssertEqual(config.interval, 30)
+        XCTAssertTrue(config.recursive)
+        XCTAssertFalse(config.preferMatchingAspect)
         XCTAssertEqual(config.dataDirectory, "~/Library/Application Support/lumen")
         XCTAssertEqual(config.favoritesFolder, "~/Pictures/Wallpapers/Favorites")
         XCTAssertEqual(config.blacklistStrategy, .list)
@@ -91,6 +93,8 @@ final class ConfigTests: XCTestCase {
             "rotation_mode": "sequential",
             "fit_style": "fit",
             "interval": 60,
+            "recursive": false,
+            "prefer_matching_aspect": true,
             "data_directory": "/test/data",
             "favorites_folder": "/test/favorites",
             "blacklist_strategy": "folder",
@@ -101,7 +105,9 @@ final class ConfigTests: XCTestCase {
                 "123": {
                     "images_folder": "/test/screen123",
                     "rotation_mode": "no-repeat",
-                    "fit_style": "center"
+                    "fit_style": "center",
+                    "recursive": true,
+                    "prefer_matching_aspect": false
                 }
             }
         }
@@ -114,6 +120,8 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.rotationMode, .sequential)
         XCTAssertEqual(config.fitStyle, .fit)
         XCTAssertEqual(config.interval, 60)
+        XCTAssertFalse(config.recursive)
+        XCTAssertTrue(config.preferMatchingAspect)
         XCTAssertEqual(config.dataDirectory, "/test/data")
         XCTAssertEqual(config.favoritesFolder, "/test/favorites")
         XCTAssertEqual(config.blacklistStrategy, .folder)
@@ -126,6 +134,8 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(screenConfig?.imagesFolder, "/test/screen123")
         XCTAssertEqual(screenConfig?.rotationMode, .noRepeat)
         XCTAssertEqual(screenConfig?.fitStyle, .center)
+        XCTAssertEqual(screenConfig?.recursive, true)
+        XCTAssertEqual(screenConfig?.preferMatchingAspect, false)
     }
     
     func testJSONEncodingDecoding() throws {
@@ -151,13 +161,23 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(RotationMode.random.rawValue, "random")
         XCTAssertEqual(RotationMode.sequential.rawValue, "sequential")
         XCTAssertEqual(RotationMode.noRepeat.rawValue, "no-repeat")
+        XCTAssertEqual(RotationMode.weightedRandom.rawValue, "weighted-random")
     }
     
     func testRotationModeFromRawValue() {
         XCTAssertEqual(RotationMode(rawValue: "random"), .random)
         XCTAssertEqual(RotationMode(rawValue: "sequential"), .sequential)
         XCTAssertEqual(RotationMode(rawValue: "no-repeat"), .noRepeat)
+        XCTAssertEqual(RotationMode(rawValue: "weighted-random"), .weightedRandom)
         XCTAssertNil(RotationMode(rawValue: "invalid"))
+    }
+
+    func testRecursiveOverride() {
+        var config = LumenConfig(recursive: true)
+        config.screens["screen1"] = ScreenConfig(recursive: false)
+
+        XCTAssertFalse(config.recursiveForScreen("screen1"))
+        XCTAssertTrue(config.recursiveForScreen("screen2"))
     }
     
     // MARK: - Fit Style Tests

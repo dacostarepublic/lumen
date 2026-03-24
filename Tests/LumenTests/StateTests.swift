@@ -12,6 +12,7 @@ final class StateTests: XCTestCase {
         XCTAssertTrue(state.history.isEmpty)
         XCTAssertTrue(state.shownImages.isEmpty)
         XCTAssertEqual(state.sequentialIndex, 0)
+        XCTAssertTrue(state.selectionCounts.isEmpty)
     }
     
     func testAddToHistory() {
@@ -24,6 +25,7 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(state.history[0].path, "/path/to/image1.jpg")
         XCTAssertEqual(state.history[0].screenId, "screen1")
         XCTAssertTrue(state.shownImages.contains("/path/to/image1.jpg"))
+        XCTAssertEqual(state.selectionCounts["/path/to/image1.jpg"], 1)
     }
     
     func testPreviousWallpaper() {
@@ -206,6 +208,46 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(loaded.favorites.count, 1)
         XCTAssertNotNil(loaded.screens["screen1"])
     }
+
+    func testStateMigrationFromV1Data() throws {
+        let json = """
+        {
+          "screens": {
+            "screen1": {
+              "current_wallpaper": "/path/old.jpg",
+              "history": [],
+              "shown_images": [],
+              "sequential_index": 0
+            }
+          },
+          "blacklist": [],
+          "favorites": [],
+          "version": 1
+        }
+        """
+
+        let loaded = try StateManager.loadFromData(json.data(using: .utf8)!)
+        XCTAssertEqual(loaded.version, AppState.currentVersion)
+        XCTAssertEqual(loaded.screens["screen1"]?.selectionCounts, [:])
+    }
+
+    func testCorruptStateFileFallsBackToFreshState() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let config = LumenConfig(dataDirectory: tempDir.path)
+        let statePath = (tempDir.path as NSString).appendingPathComponent("state.json")
+        try "{ invalid-json".write(toFile: statePath, atomically: true, encoding: .utf8)
+
+        let manager = try StateManager(config: config)
+        let state = manager.getState()
+
+        XCTAssertEqual(state.version, AppState.currentVersion)
+        XCTAssertTrue(state.screens.isEmpty)
+        XCTAssertTrue(state.blacklist.isEmpty)
+        XCTAssertTrue(state.favorites.isEmpty)
+    }
     
     // MARK: - State Error Tests
     
@@ -214,8 +256,7 @@ final class StateTests: XCTestCase {
         XCTAssertTrue(error1.description.contains("No history"))
         XCTAssertTrue(error1.description.contains("screen1"))
         
-        let error2 = StateError.loadFailed(path: "/test/path", underlying: NSError(domain: "test", code: 1))
-        XCTAssertTrue(error2.description.contains("Failed to load"))
+        let error2 = StateError.fileOperationFailed(operation: "lock", path: "/test/path", underlying: NSError(domain: "test", code: 1))
+        XCTAssertTrue(error2.description.contains("Failed to lock"))
     }
 }
-

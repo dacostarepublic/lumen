@@ -6,11 +6,12 @@ A terminal-first wallpaper manager for macOS. Inspired by [Irvue](https://irvue.
 
 - 🖼️ **Rotate wallpapers** from local folders (jpg, png, heic, tiff, gif, bmp)
 - 🖥️ **Multi-monitor support** with independent wallpapers per screen
-- 🎲 **Rotation modes**: random, sequential, or no-repeat
+- 🎲 **Rotation modes**: random, sequential, no-repeat, or weighted-random
 - ⏪ **History tracking** with ability to go back to previous wallpapers
 - ⭐ **Favorites** - save wallpapers you love
 - 🚫 **Blacklist** - ban wallpapers you don't want to see again
 - 🔧 **Per-screen configuration** - different folders and settings per monitor
+- 🔁 **Built-in daemon mode** with timer + space-change/wake re-apply
 - 📋 **JSON output** for scripting and automation
 - ⚡ **Fast startup** - perfect for cron/launchd scheduling
 
@@ -100,10 +101,13 @@ Manually set a specific wallpaper.
 
 ```bash
 # Set wallpaper on screen 2
-lumen set --screen 2 --file "/path/to/wallpaper.jpg"
+lumen set "/path/to/wallpaper.jpg" --screen 2
 
 # Set with specific fit style
-lumen set --screen 1 --file "~/Pictures/photo.png" --fit center
+lumen set "~/Pictures/photo.png" --screen 1 --fit center
+
+# Legacy form is still accepted
+lumen set --screen 1 --file "~/Pictures/photo.png"
 ```
 
 ### `lumen status`
@@ -169,6 +173,33 @@ lumen ban --screen 1 --and-update
 lumen ban --screen 1 --move-file
 ```
 
+### `lumen unban`
+
+Remove image(s) from blacklist.
+
+```bash
+# Unban by path
+lumen unban --file "/path/to/wallpaper.jpg"
+
+# Unban most recently blacklisted image
+lumen unban --last
+
+# Clear blacklist
+lumen unban --all
+```
+
+### `lumen open`
+
+Open the current wallpaper in Finder or Preview.
+
+```bash
+# Reveal wallpaper in Finder (default)
+lumen open --screen 1
+
+# Open wallpaper in Preview
+lumen open --screen 1 --target preview
+```
+
 ### `lumen history`
 
 View wallpaper history.
@@ -194,6 +225,9 @@ lumen list --favorites
 
 # List blacklisted images
 lumen list --blacklist
+
+# Remove a blacklisted path
+lumen list --blacklist --remove "/path/to/wallpaper.jpg"
 
 # Verbose output with full paths
 lumen list --favorites --verbose
@@ -229,6 +263,8 @@ The configuration file is stored at `~/.lumen-config` by default (JSON format).
   "rotation_mode": "random",
   "fit_style": "fill",
   "interval": 30,
+  "recursive": true,
+  "prefer_matching_aspect": false,
   "data_directory": "~/Library/Application Support/lumen",
   "favorites_folder": "~/Pictures/Wallpapers/Favorites",
   "blacklist_strategy": "list",
@@ -244,9 +280,11 @@ The configuration file is stored at `~/.lumen-config` by default (JSON format).
 | Option | Description | Values |
 |--------|-------------|--------|
 | `images_folder` | Default folder containing wallpapers | Path (supports `~`) |
-| `rotation_mode` | How to select next wallpaper | `random`, `sequential`, `no-repeat` |
+| `rotation_mode` | How to select next wallpaper | `random`, `sequential`, `no-repeat`, `weighted-random` |
 | `fit_style` | How wallpaper fits the screen | `fill`, `fit`, `stretch`, `center`, `tile` |
-| `interval` | Rotation interval in minutes (for documentation) | Integer |
+| `interval` | Rotation interval in minutes (used by `lumen daemon`) | Integer |
+| `recursive` | Recurse into subfolders during image discovery | `true`, `false` |
+| `prefer_matching_aspect` | Prefer images matching display aspect ratio | `true`, `false` |
 | `data_directory` | Where to store state files | Path |
 | `favorites_folder` | Where to copy favorited wallpapers | Path |
 | `blacklist_strategy` | How to handle blacklisted images | `list` (record only) or `folder` (move files) |
@@ -267,7 +305,9 @@ Override settings for specific screens:
     "188178051": {
       "images_folder": "~/Pictures/PortraitWallpapers",
       "rotation_mode": "sequential",
-      "fit_style": "center"
+      "fit_style": "center",
+      "recursive": false,
+      "prefer_matching_aspect": true
     }
   }
 }
@@ -280,6 +320,7 @@ Use `lumen status` to find screen IDs.
 - **`random`**: Pure random selection from available images
 - **`sequential`**: Go through images in alphabetical order
 - **`no-repeat`**: Random selection but don't repeat until all images have been shown
+- **`weighted-random`**: Random selection weighted toward less-shown images
 
 ### Fit Styles
 
@@ -289,11 +330,33 @@ Use `lumen status` to find screen IDs.
 - **`center`**: Center without scaling
 - **`tile`**: Tile the image
 
+## Shell Completions
+
+Lumen supports completion script generation:
+
+```bash
+lumen --generate-completion-script bash
+lumen --generate-completion-script zsh
+lumen --generate-completion-script fish
+```
+
 ## Scheduling
 
-Lumen is designed to be scheduled externally using launchd or cron.
+### Built-in daemon (Recommended)
 
-### Using launchd (Recommended)
+```bash
+# Run continuously using configured interval
+lumen daemon
+
+# Run one rotation cycle and exit
+lumen daemon --once
+```
+
+Daemon re-applies current wallpapers on space-change and wake events.
+
+You can also schedule one-shot updates externally using launchd or cron.
+
+### Using launchd
 
 Create `~/Library/LaunchAgents/com.user.lumen.plist`:
 

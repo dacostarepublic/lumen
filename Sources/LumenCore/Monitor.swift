@@ -189,7 +189,7 @@ public class MonitorManager {
     }
     
     /// Updates the system backing store so all desktop spaces on the display use the same image.
-    /// setDesktopImageURL only affects the current space; this syncs all spaces (Ventura: Dock db, Sonoma+: Wallpaper plist).
+    /// setDesktopImageURL only affects the current space; this syncs all spaces on macOS 13-15.
     private static func syncWallpaperAcrossSpacesBestEffort(monitorId: String, imagePath: String) {
         _ = monitorId
         let ver = ProcessInfo.processInfo.operatingSystemVersion
@@ -212,7 +212,7 @@ public class MonitorManager {
                 return
             }
             // macOS 14-15: AllSpacesAndDisplays is a dict (Desktop -> Content -> Choices -> Files).
-            // macOS 26+: AllSpacesAndDisplays can be a string; use "Spaces" or "Displays" dict and set relative in each entry.
+            // Some installations may store alternate structures; try known fallback keys below.
             var didSet = false
             if let allSpacesAny = plist["AllSpacesAndDisplays"],
                let allSpaces = (allSpacesAny as? NSMutableDictionary) ?? (allSpacesAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary {
@@ -244,7 +244,7 @@ public class MonitorManager {
                 }
             }
             if !didSet, let spacesAny = plist["Spaces"] as? NSDictionary {
-                // macOS 26: "Spaces" is a dict; each value is a space config. Set Content->Choices[0]->Files[0]->relative in each.
+                // Fallback: "Spaces" dictionary where each value is a space config.
                 let spaces = (spacesAny as? NSMutableDictionary) ?? spacesAny.mutableCopy() as? NSMutableDictionary
                 guard let spaces = spaces else { return }
                 for key in spaces.allKeys {
@@ -276,7 +276,7 @@ public class MonitorManager {
                 didSet = true
             }
             if !didSet, let displaysAny = plist["Displays"] as? NSDictionary {
-                // macOS 26: "Displays" dict; same pattern per display.
+                // Fallback: "Displays" dictionary with per-display entries.
                 let displays = (displaysAny as? NSMutableDictionary) ?? displaysAny.mutableCopy() as? NSMutableDictionary
                 guard let displays = displays else { return }
                 for key in displays.allKeys {
@@ -343,23 +343,6 @@ public class MonitorManager {
         proc.waitUntilExit()
     }
     
-    /// Set wallpaper for all monitors
-    public static func setWallpaperForAll(imagePath: String, fitStyle: FitStyle = .fill, syncAllSpaces: Bool = false) throws {
-        let monitors = getMonitors()
-        var errors: [String] = []
-        
-        for monitor in monitors {
-            do {
-                try setWallpaper(for: monitor.id, imagePath: imagePath, fitStyle: fitStyle, syncAllSpaces: syncAllSpaces)
-            } catch {
-                errors.append("Screen \(monitor.index): \(error)")
-            }
-        }
-        
-        if !errors.isEmpty {
-            throw MonitorError.multipleErrors(errors)
-        }
-    }
 }
 
 // MARK: - Monitor Errors
@@ -372,8 +355,6 @@ public enum MonitorError: Error, CustomStringConvertible {
     case imageNotFound(path: String)
     case unsupportedImageFormat(extension: String)
     case setWallpaperFailed(path: String, underlying: Error)
-    case multipleErrors([String])
-    case permissionDenied
     
     public var description: String {
         switch self {
@@ -391,10 +372,6 @@ public enum MonitorError: Error, CustomStringConvertible {
             return "Unsupported image format: '.\(ext)'. Supported: jpg, png, heic, tiff, gif, bmp"
         case .setWallpaperFailed(let path, let underlying):
             return "Failed to set wallpaper '\(path)': \(underlying.localizedDescription)"
-        case .multipleErrors(let errors):
-            return "Multiple errors occurred:\n" + errors.joined(separator: "\n")
-        case .permissionDenied:
-            return "Permission denied. Ensure lumen has access to control your desktop."
         }
     }
 }

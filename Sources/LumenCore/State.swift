@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 // MARK: - History Entry
 
@@ -24,12 +25,37 @@ public struct ScreenState: Codable, Equatable, Sendable {
     public var history: [HistoryEntry]
     public var shownImages: Set<String>  // For no-repeat mode
     public var sequentialIndex: Int      // For sequential mode
+    public var selectionCounts: [String: Int]  // For weighted-random mode
     
-    public init(currentWallpaper: String? = nil, history: [HistoryEntry] = [], shownImages: Set<String> = [], sequentialIndex: Int = 0) {
+    public init(
+        currentWallpaper: String? = nil,
+        history: [HistoryEntry] = [],
+        shownImages: Set<String> = [],
+        sequentialIndex: Int = 0,
+        selectionCounts: [String: Int] = [:]
+    ) {
         self.currentWallpaper = currentWallpaper
         self.history = history
         self.shownImages = shownImages
         self.sequentialIndex = sequentialIndex
+        self.selectionCounts = selectionCounts
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case currentWallpaper
+        case history
+        case shownImages
+        case sequentialIndex
+        case selectionCounts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        currentWallpaper = try container.decodeIfPresent(String.self, forKey: .currentWallpaper)
+        history = try container.decodeIfPresent([HistoryEntry].self, forKey: .history) ?? []
+        shownImages = try container.decodeIfPresent(Set<String>.self, forKey: .shownImages) ?? []
+        sequentialIndex = try container.decodeIfPresent(Int.self, forKey: .sequentialIndex) ?? 0
+        selectionCounts = try container.decodeIfPresent([String: Int].self, forKey: .selectionCounts) ?? [:]
     }
     
     /// Get the previous wallpaper from history (not including current)
@@ -44,6 +70,7 @@ public struct ScreenState: Codable, Equatable, Sendable {
         history.append(entry)
         currentWallpaper = path
         shownImages.insert(path)
+        selectionCounts[path, default: 0] += 1
         
         // Keep history manageable (last 1000 entries)
         if history.count > 1000 {
@@ -54,6 +81,10 @@ public struct ScreenState: Codable, Equatable, Sendable {
     /// Reset the shown images set (for no-repeat mode when cycle completes)
     public mutating func resetShownImages() {
         shownImages.removeAll()
+    }
+
+    public mutating func pruneSelectionCounts(validPaths: Set<String>) {
+        selectionCounts = selectionCounts.filter { validPaths.contains($0.key) }
     }
 }
 
@@ -98,13 +129,38 @@ public struct AppState: Codable, Equatable, Sendable {
     public var favorites: [FavoriteEntry]
     public var version: Int
     
-    public static let currentVersion = 1
+    public static let currentVersion = 2
     
     public init(screens: [String: ScreenState] = [:], blacklist: [BlacklistEntry] = [], favorites: [FavoriteEntry] = [], version: Int = currentVersion) {
         self.screens = screens
         self.blacklist = blacklist
         self.favorites = favorites
         self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case screens
+        case blacklist
+        case favorites
+        case version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        screens = try container.decodeIfPresent([String: ScreenState].self, forKey: .screens) ?? [:]
+        blacklist = try container.decodeIfPresent([BlacklistEntry].self, forKey: .blacklist) ?? []
+        favorites = try container.decodeIfPresent([FavoriteEntry].self, forKey: .favorites) ?? []
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+    }
+
+    public func migratedToCurrentVersion() -> AppState {
+        var migrated = self
+
+        if migrated.version < 2 {
+            migrated.version = 2
+        }
+
+        return migrated
     }
     
     /// Get or create state for a screen
@@ -170,16 +226,21 @@ public class StateManager {
     private let config: LumenConfig
     private var state: AppState
     private let stateFilePath: String
+    private let lockFilePath: String
     
     public init(config: LumenConfig) throws {
         self.config = config
         self.stateFilePath = config.stateFile
+        self.lockFilePath = config.stateFile + ".lock"
+        self.state = AppState()
         
         // Ensure data directory exists
         try ConfigManager.ensureDataDirectory(config: config)
         
         // Load existing state or create new
-        self.state = try StateManager.load(from: stateFilePath) ?? AppState()
+        self.state = try withStateLock {
+            try StateManager.load(from: stateFilePath) ?? AppState()
+        }
     }
     
     /// Initialize with provided state (for testing)
@@ -187,6 +248,7 @@ public class StateManager {
         self.config = config
         self.state = initialState
         self.stateFilePath = stateFilePath
+        self.lockFilePath = stateFilePath + ".lock"
     }
     
     /// Load state from file
@@ -203,7 +265,14 @@ public class StateManager {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(AppState.self, from: data)
+
+        do {
+            let decoded = try decoder.decode(AppState.self, from: data)
+            return decoded.migratedToCurrentVersion()
+        } catch {
+            printStateWarning("Could not decode state file at '\(path)'. Starting with a fresh state. Error: \(error)")
+            return AppState()
+        }
     }
     
     /// Load state from data (for testing)
@@ -211,23 +280,71 @@ public class StateManager {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(AppState.self, from: data)
+        let decoded = try decoder.decode(AppState.self, from: data)
+        return decoded.migratedToCurrentVersion()
     }
     
     /// Save state to file
     public func save() throws {
+        try withStateLock {
+            try saveUnlocked()
+        }
+    }
+
+    private func saveUnlocked() throws {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         
         let data = try encoder.encode(state)
-        try data.write(to: URL(fileURLWithPath: stateFilePath))
+        try data.write(to: URL(fileURLWithPath: stateFilePath), options: .atomic)
+    }
+
+    @discardableResult
+    private func mutateAndSave<T>(_ mutation: (inout AppState) throws -> T) throws -> T {
+        return try withStateLock {
+            state = try StateManager.load(from: stateFilePath) ?? AppState()
+            let result = try mutation(&state)
+            try saveUnlocked()
+            return result
+        }
+    }
+
+    private func withStateLock<T>(_ operation: () throws -> T) throws -> T {
+        let fd = open(lockFilePath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd != -1 else {
+            throw StateError.fileOperationFailed(
+                operation: "open lock file",
+                path: lockFilePath,
+                underlying: NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            )
+        }
+
+        if flock(fd, LOCK_EX) != 0 {
+            let lockError = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            close(fd)
+            throw StateError.fileOperationFailed(operation: "acquire lock", path: lockFilePath, underlying: lockError)
+        }
+
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+
+        return try operation()
     }
     
     /// Get current app state (for testing)
     public func getState() -> AppState {
         return state
+    }
+
+    /// Refresh in-memory state from disk.
+    public func refresh() throws {
+        try withStateLock {
+            state = try StateManager.load(from: stateFilePath) ?? AppState()
+        }
     }
     
     // MARK: - Screen State Operations
@@ -237,10 +354,11 @@ public class StateManager {
     }
     
     public func recordWallpaperChange(screenId: String, path: String) throws {
-        var screenState = state.screenState(for: screenId)
-        screenState.addToHistory(path, screenId: screenId)
-        state.updateScreen(screenId, screenState)
-        try save()
+        try mutateAndSave { state in
+            var screenState = state.screenState(for: screenId)
+            screenState.addToHistory(path, screenId: screenId)
+            state.updateScreen(screenId, screenState)
+        }
     }
     
     public func getPreviousWallpaper(for screenId: String) -> String? {
@@ -256,10 +374,11 @@ public class StateManager {
     }
     
     public func resetShownImages(for screenId: String) throws {
-        var screenState = state.screenState(for: screenId)
-        screenState.resetShownImages()
-        state.updateScreen(screenId, screenState)
-        try save()
+        try mutateAndSave { state in
+            var screenState = state.screenState(for: screenId)
+            screenState.resetShownImages()
+            state.updateScreen(screenId, screenState)
+        }
     }
     
     public func getSequentialIndex(for screenId: String) -> Int {
@@ -267,10 +386,23 @@ public class StateManager {
     }
     
     public func setSequentialIndex(for screenId: String, index: Int) throws {
-        var screenState = state.screenState(for: screenId)
-        screenState.sequentialIndex = index
-        state.updateScreen(screenId, screenState)
-        try save()
+        try mutateAndSave { state in
+            var screenState = state.screenState(for: screenId)
+            screenState.sequentialIndex = index
+            state.updateScreen(screenId, screenState)
+        }
+    }
+
+    public func pruneSelectionCounts(for screenId: String, validPaths: Set<String>) throws {
+        try mutateAndSave { state in
+            var screenState = state.screenState(for: screenId)
+            screenState.pruneSelectionCounts(validPaths: validPaths)
+            state.updateScreen(screenId, screenState)
+        }
+    }
+
+    public func getSelectionCounts(for screenId: String) -> [String: Int] {
+        return state.screenState(for: screenId).selectionCounts
     }
     
     // MARK: - Blacklist Operations
@@ -286,27 +418,52 @@ public class StateManager {
             hash = try? computeFileHash(path)
         }
         
-        state.addToBlacklist(path, hash: hash)
-        
+        try mutateAndSave { state in
+            state.addToBlacklist(path, hash: hash)
+        }
+
         // If using folder strategy, move the file
         if moveToFolder, let blacklistFolder = config.blacklistFolder {
             let fileName = (path as NSString).lastPathComponent
             let destPath = (blacklistFolder as NSString).appendingPathComponent(fileName)
-            
+
             // Create blacklist folder if needed
             try FileManager.default.createDirectory(atPath: blacklistFolder, withIntermediateDirectories: true)
-            
+
             // Move file (with unique name if conflict)
             let finalPath = getUniqueFilePath(destPath)
             try FileManager.default.moveItem(atPath: path, toPath: finalPath)
         }
-        
-        try save()
     }
     
     public func removeFromBlacklist(_ path: String) throws {
-        state.removeFromBlacklist(path)
-        try save()
+        try mutateAndSave { state in
+            state.removeFromBlacklist(path)
+        }
+    }
+
+    public func getMostRecentBlacklisted() -> BlacklistEntry? {
+        return state.blacklist.max(by: { $0.timestamp < $1.timestamp })
+    }
+
+    @discardableResult
+    public func removeMostRecentBlacklisted() throws -> BlacklistEntry? {
+        return try mutateAndSave { state in
+            guard let latest = state.blacklist.max(by: { $0.timestamp < $1.timestamp }) else {
+                return nil
+            }
+            state.removeFromBlacklist(latest.path)
+            return latest
+        }
+    }
+
+    @discardableResult
+    public func clearBlacklist() throws -> Int {
+        return try mutateAndSave { state in
+            let count = state.blacklist.count
+            state.blacklist.removeAll()
+            return count
+        }
     }
     
     public func getBlacklist() -> [BlacklistEntry] {
@@ -338,13 +495,15 @@ public class StateManager {
             favoritePath = finalPath
         }
         
-        state.addToFavorites(path, favoritePath: favoritePath)
-        try save()
+        try mutateAndSave { state in
+            state.addToFavorites(path, favoritePath: favoritePath)
+        }
     }
     
     public func removeFromFavorites(_ path: String) throws {
-        state.removeFromFavorites(path)
-        try save()
+        try mutateAndSave { state in
+            state.removeFromFavorites(path)
+        }
     }
     
     public func getFavorites() -> [FavoriteEntry] {
@@ -397,20 +556,20 @@ public class StateManager {
     }
 }
 
+private func printStateWarning(_ message: String) {
+    if let data = "Warning: \(message)\n".data(using: .utf8) {
+        FileHandle.standardError.write(data)
+    }
+}
+
 // MARK: - State Errors
 
 public enum StateError: Error, CustomStringConvertible {
-    case loadFailed(path: String, underlying: Error)
-    case saveFailed(path: String, underlying: Error)
     case noHistory(screenId: String)
     case fileOperationFailed(operation: String, path: String, underlying: Error)
     
     public var description: String {
         switch self {
-        case .loadFailed(let path, let underlying):
-            return "Failed to load state from '\(path)': \(underlying.localizedDescription)"
-        case .saveFailed(let path, let underlying):
-            return "Failed to save state to '\(path)': \(underlying.localizedDescription)"
         case .noHistory(let screenId):
             return "No history available for screen '\(screenId)'"
         case .fileOperationFailed(let operation, let path, let underlying):
@@ -418,4 +577,3 @@ public enum StateError: Error, CustomStringConvertible {
         }
     }
 }
-

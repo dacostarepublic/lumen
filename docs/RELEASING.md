@@ -14,7 +14,7 @@ This project is distributed through a custom Homebrew tap first.
 
 1. Update version in `Sources/lumen/Lumen.swift` (`Lumen.configuration.version`).
 2. Update `CHANGELOG.md`:
-   - Move relevant notes from `Unreleased` into a version section, e.g. `## [1.1.0] - 2026-03-24`.
+   - Move relevant notes from `Unreleased` into a version section, e.g. `## [2.0.0] - 2026-03-24`.
 3. Run checks:
 
 ```bash
@@ -24,8 +24,8 @@ make ci
 ## 2) Create and publish a tag
 
 ```bash
-git tag -a v1.1.0 -m "Release v1.1.0"
-git push origin v1.1.0
+git tag -a v2.0.0 -m "Release v2.0.0"
+git push origin v2.0.0
 ```
 
 Pushing the tag triggers `.github/workflows/release.yml`, which builds and uploads release assets.
@@ -36,9 +36,9 @@ The release workflow uploads `lumen-vX.Y.Z-macos.tar.gz` and its checksum file.
 If you need to recompute locally:
 
 ```bash
-make release-artifact VERSION=1.1.0
-curl -L -o /tmp/lumen-v1.1.0-macos.tar.gz https://github.com/dacostarepublic/lumen/releases/download/v1.1.0/lumen-v1.1.0-macos.tar.gz
-shasum -a 256 /tmp/lumen-v1.1.0-macos.tar.gz
+make release-artifact VERSION=2.0.0
+curl -L -o /tmp/lumen-v2.0.0-macos.tar.gz https://github.com/dacostarepublic/lumen/releases/download/v2.0.0/lumen-v2.0.0-macos.tar.gz
+shasum -a 256 /tmp/lumen-v2.0.0-macos.tar.gz
 ```
 
 ## 4) Update tap formula
