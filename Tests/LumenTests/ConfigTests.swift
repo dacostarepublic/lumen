@@ -17,6 +17,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.blacklistStrategy, .list)
         XCTAssertNil(config.blacklistFolder)
         XCTAssertEqual(config.logLevel, "info")
+        XCTAssertFalse(config.applyAllSpaces)
         XCTAssertTrue(config.screens.isEmpty)
     }
     
@@ -95,6 +96,7 @@ final class ConfigTests: XCTestCase {
             "blacklist_strategy": "folder",
             "blacklist_folder": "/test/blacklist",
             "log_level": "debug",
+            "apply_all_spaces": true,
             "screens": {
                 "123": {
                     "images_folder": "/test/screen123",
@@ -117,6 +119,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.blacklistStrategy, .folder)
         XCTAssertEqual(config.blacklistFolder, "/test/blacklist")
         XCTAssertEqual(config.logLevel, "debug")
+        XCTAssertTrue(config.applyAllSpaces)
         
         let screenConfig = config.screens["123"]
         XCTAssertNotNil(screenConfig)
@@ -180,5 +183,43 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(error.description.contains("Invalid configuration"))
         XCTAssertTrue(error.description.contains("invalid JSON"))
     }
-}
 
+    func testInvalidIntervalFailsValidation() {
+        let json = """
+        {
+            "images_folder": "/test/images",
+            "rotation_mode": "random",
+            "fit_style": "fill",
+            "interval": 0,
+            "data_directory": "/test/data",
+            "favorites_folder": "/test/favorites",
+            "blacklist_strategy": "list",
+            "log_level": "info",
+            "screens": {}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        XCTAssertThrowsError(try ConfigManager.load(from: data))
+    }
+
+    func testFolderStrategyRequiresBlacklistFolder() {
+        let json = """
+        {
+            "images_folder": "/test/images",
+            "rotation_mode": "random",
+            "fit_style": "fill",
+            "interval": 30,
+            "data_directory": "/test/data",
+            "favorites_folder": "/test/favorites",
+            "blacklist_strategy": "folder",
+            "blacklist_folder": null,
+            "log_level": "info",
+            "screens": {}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        XCTAssertThrowsError(try ConfigManager.load(from: data))
+    }
+}

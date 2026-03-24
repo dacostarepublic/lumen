@@ -8,13 +8,6 @@
   "blacklist_strategy": "list",
   "blacklist_folder": null,
   "log_level": "info",
-  "screens": {
-    "_comment": "Per-screen overrides - use screen IDs from 'lumen status'",
-    "_example_188178051": {
-      "images_folder": "~/Pictures/PortraitWallpapers",
-      "rotation_mode": "sequential",
-      "fit_style": "center"
-    }
-  }
+  "apply_all_spaces": false,
+  "screens": {}
 }
-

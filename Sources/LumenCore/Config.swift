@@ -71,6 +71,7 @@ public struct LumenConfig: Codable, Equatable, Sendable {
     
     // Behavior
     public var logLevel: String
+    public var applyAllSpaces: Bool
     
     // Per-screen overrides (keyed by screen identifier)
     public var screens: [String: ScreenConfig]
@@ -98,6 +99,7 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         blacklistStrategy: BlacklistStrategy = .list,
         blacklistFolder: String? = nil,
         logLevel: String = "info",
+        applyAllSpaces: Bool = false,
         screens: [String: ScreenConfig] = [:]
     ) {
         self.imagesFolder = imagesFolder
@@ -109,7 +111,37 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         self.blacklistStrategy = blacklistStrategy
         self.blacklistFolder = blacklistFolder
         self.logLevel = logLevel
+        self.applyAllSpaces = applyAllSpaces
         self.screens = screens
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case imagesFolder
+        case rotationMode
+        case fitStyle
+        case interval
+        case dataDirectory
+        case favoritesFolder
+        case blacklistStrategy
+        case blacklistFolder
+        case logLevel
+        case applyAllSpaces
+        case screens
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        imagesFolder = try container.decode(String.self, forKey: .imagesFolder)
+        rotationMode = try container.decode(RotationMode.self, forKey: .rotationMode)
+        fitStyle = try container.decode(FitStyle.self, forKey: .fitStyle)
+        interval = try container.decode(Int.self, forKey: .interval)
+        dataDirectory = try container.decode(String.self, forKey: .dataDirectory)
+        favoritesFolder = try container.decode(String.self, forKey: .favoritesFolder)
+        blacklistStrategy = try container.decode(BlacklistStrategy.self, forKey: .blacklistStrategy)
+        blacklistFolder = try container.decodeIfPresent(String.self, forKey: .blacklistFolder)
+        logLevel = try container.decodeIfPresent(String.self, forKey: .logLevel) ?? "info"
+        applyAllSpaces = try container.decodeIfPresent(Bool.self, forKey: .applyAllSpaces) ?? false
+        screens = try container.decodeIfPresent([String: ScreenConfig].self, forKey: .screens) ?? [:]
     }
     
     /// Get effective images folder for a screen
@@ -145,6 +177,30 @@ public struct LumenConfig: Codable, Equatable, Sendable {
         }
         return config
     }
+
+    /// Validate configuration values for runtime safety.
+    public func validated() throws -> LumenConfig {
+        if imagesFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ConfigError.invalidValue(field: "images_folder", value: imagesFolder)
+        }
+
+        if interval <= 0 {
+            throw ConfigError.invalidValue(field: "interval", value: String(interval))
+        }
+
+        let normalizedLogLevel = logLevel.lowercased()
+        let allowedLogLevels = ["debug", "info", "warn", "error"]
+        if !allowedLogLevels.contains(normalizedLogLevel) {
+            throw ConfigError.invalidValue(field: "log_level", value: logLevel)
+        }
+
+        if blacklistStrategy == .folder,
+           (blacklistFolder?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            throw ConfigError.invalidValue(field: "blacklist_folder", value: "null")
+        }
+
+        return self
+    }
 }
 
 // MARK: - Config File Management
@@ -170,7 +226,7 @@ public struct ConfigManager {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let config = try decoder.decode(LumenConfig.self, from: data)
-            return config.expanded()
+            return try config.expanded().validated()
         } catch let error as DecodingError {
             throw ConfigError.parseError(details: describeDecodingError(error))
         }
@@ -180,7 +236,8 @@ public struct ConfigManager {
     public static func load(from data: Data) throws -> LumenConfig {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(LumenConfig.self, from: data)
+        let config = try decoder.decode(LumenConfig.self, from: data)
+        return try config.expanded().validated()
     }
     
     /// Save configuration to file
@@ -294,4 +351,3 @@ public enum ConfigError: Error, CustomStringConvertible {
         }
     }
 }
-

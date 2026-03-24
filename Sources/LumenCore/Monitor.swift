@@ -131,7 +131,7 @@ public class MonitorManager {
     }
     
     /// Set wallpaper for a specific monitor
-    public static func setWallpaper(for monitorId: String, imagePath: String, fitStyle: FitStyle = .fill) throws {
+    public static func setWallpaper(for monitorId: String, imagePath: String, fitStyle: FitStyle = .fill, syncAllSpaces: Bool = false) throws {
         guard let displayID = UInt32(monitorId) else {
             throw MonitorError.invalidMonitorId(monitorId)
         }
@@ -180,16 +180,177 @@ public class MonitorManager {
         } catch {
             throw MonitorError.setWallpaperFailed(path: imagePath, underlying: error)
         }
+        
+        if syncAllSpaces {
+            // Best-effort compatibility shim for older macOS behavior where only the current
+            // space updates through NSWorkspace APIs.
+            syncWallpaperAcrossSpacesBestEffort(monitorId: monitorId, imagePath: imagePath)
+        }
+    }
+    
+    /// Updates the system backing store so all desktop spaces on the display use the same image.
+    /// setDesktopImageURL only affects the current space; this syncs all spaces (Ventura: Dock db, Sonoma+: Wallpaper plist).
+    private static func syncWallpaperAcrossSpacesBestEffort(monitorId: String, imagePath: String) {
+        _ = monitorId
+        let ver = ProcessInfo.processInfo.operatingSystemVersion
+        let fileURL = URL(fileURLWithPath: imagePath).absoluteString
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        
+        // Skip this path on newer systems where private storage formats have diverged.
+        if ver.majorVersion >= 26 {
+            return
+        }
+        if ver.majorVersion >= 14 {
+            // macOS 14-15 (Sonoma/Sequoia): com.apple.wallpaper Store, AllSpacesAndDisplays dict
+            let plistPath = "\(home)/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+            guard FileManager.default.fileExists(atPath: plistPath) else { return }
+            // Edit plist in Swift (PlistBuddy "set" fails when key path or structure differs by OS)
+            let plistURL = URL(fileURLWithPath: plistPath)
+            var format: PropertyListSerialization.PropertyListFormat = .binary
+            guard let data = try? Data(contentsOf: plistURL),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, options: .mutableContainers, format: &format) as? NSMutableDictionary else {
+                return
+            }
+            // macOS 14-15: AllSpacesAndDisplays is a dict (Desktop -> Content -> Choices -> Files).
+            // macOS 26+: AllSpacesAndDisplays can be a string; use "Spaces" or "Displays" dict and set relative in each entry.
+            var didSet = false
+            if let allSpacesAny = plist["AllSpacesAndDisplays"],
+               let allSpaces = (allSpacesAny as? NSMutableDictionary) ?? (allSpacesAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary {
+                let desktopKey = allSpaces["Desktop"] != nil ? "Desktop" : (allSpaces.allKeys.first as? String)
+                if let desktopKey = desktopKey,
+                   let desktopAny = allSpaces[desktopKey],
+                   let desktop = (desktopAny as? NSMutableDictionary) ?? (desktopAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                   let contentAny = desktop["Content"],
+                   let content = (contentAny as? NSMutableDictionary) ?? (contentAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                   let choicesAny = content["Choices"],
+                   let choices = (choicesAny as? NSMutableArray) ?? (choicesAny as? NSArray)?.mutableCopy() as? NSMutableArray,
+                   choices.count > 0,
+                   let choice0Any = choices[0] as? NSDictionary,
+                   let choice0 = choice0Any.mutableCopy() as? NSMutableDictionary,
+                   let filesAny = choice0["Files"],
+                   let files = (filesAny as? NSMutableArray) ?? (filesAny as? NSArray)?.mutableCopy() as? NSMutableArray,
+                   files.count > 0,
+                   let file0Any = files[0] as? NSDictionary,
+                   let file0 = file0Any.mutableCopy() as? NSMutableDictionary {
+                    file0["relative"] = fileURL
+                    files.replaceObject(at: 0, with: file0)
+                    choice0["Files"] = files
+                    choices.replaceObject(at: 0, with: choice0)
+                    content["Choices"] = choices
+                    desktop["Content"] = content
+                    allSpaces[desktopKey] = desktop
+                    plist["AllSpacesAndDisplays"] = allSpaces
+                    didSet = true
+                }
+            }
+            if !didSet, let spacesAny = plist["Spaces"] as? NSDictionary {
+                // macOS 26: "Spaces" is a dict; each value is a space config. Set Content->Choices[0]->Files[0]->relative in each.
+                let spaces = (spacesAny as? NSMutableDictionary) ?? spacesAny.mutableCopy() as? NSMutableDictionary
+                guard let spaces = spaces else { return }
+                for key in spaces.allKeys {
+                    guard let entryAny = spaces[key],
+                          let entry = (entryAny as? NSMutableDictionary) ?? (entryAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                          let contentAny = entry["Content"],
+                          let content = (contentAny as? NSMutableDictionary) ?? (contentAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                          let choicesAny = content["Choices"],
+                          let choices = (choicesAny as? NSArray) ?? (choicesAny as? NSMutableArray),
+                          choices.count > 0,
+                          let choice0Any = choices[0] as? NSDictionary,
+                          let choice0 = choice0Any.mutableCopy() as? NSMutableDictionary,
+                          let filesAny = choice0["Files"],
+                          let files = (filesAny as? NSArray) ?? (filesAny as? NSMutableArray),
+                          files.count > 0,
+                          let file0Any = files[0] as? NSDictionary,
+                          let file0 = file0Any.mutableCopy() as? NSMutableDictionary else { continue }
+                    file0["relative"] = fileURL
+                    let filesMut = (files as? NSMutableArray) ?? files.mutableCopy() as? NSMutableArray
+                    let choicesMut = (choices as? NSMutableArray) ?? choices.mutableCopy() as? NSMutableArray
+                    filesMut?.replaceObject(at: 0, with: file0)
+                    choice0["Files"] = filesMut ?? files
+                    choicesMut?.replaceObject(at: 0, with: choice0)
+                    content["Choices"] = choicesMut ?? choices
+                    entry["Content"] = content
+                    spaces[key] = entry
+                }
+                plist["Spaces"] = spaces
+                didSet = true
+            }
+            if !didSet, let displaysAny = plist["Displays"] as? NSDictionary {
+                // macOS 26: "Displays" dict; same pattern per display.
+                let displays = (displaysAny as? NSMutableDictionary) ?? displaysAny.mutableCopy() as? NSMutableDictionary
+                guard let displays = displays else { return }
+                for key in displays.allKeys {
+                    guard let entryAny = displays[key],
+                          let entry = (entryAny as? NSMutableDictionary) ?? (entryAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                          let contentAny = entry["Content"],
+                          let content = (contentAny as? NSMutableDictionary) ?? (contentAny as? NSDictionary)?.mutableCopy() as? NSMutableDictionary,
+                          let choicesAny = content["Choices"],
+                          let choices = (choicesAny as? NSArray) ?? (choicesAny as? NSMutableArray),
+                          choices.count > 0,
+                          let choice0Any = choices[0] as? NSDictionary,
+                          let choice0 = choice0Any.mutableCopy() as? NSMutableDictionary,
+                          let filesAny = choice0["Files"],
+                          let files = (filesAny as? NSArray) ?? (filesAny as? NSMutableArray),
+                          files.count > 0,
+                          let file0Any = files[0] as? NSDictionary,
+                          let file0 = file0Any.mutableCopy() as? NSMutableDictionary else { continue }
+                    file0["relative"] = fileURL
+                    let filesMut = (files as? NSMutableArray) ?? files.mutableCopy() as? NSMutableArray
+                    let choicesMut = (choices as? NSMutableArray) ?? choices.mutableCopy() as? NSMutableArray
+                    filesMut?.replaceObject(at: 0, with: file0)
+                    choice0["Files"] = filesMut ?? files
+                    choicesMut?.replaceObject(at: 0, with: choice0)
+                    content["Choices"] = choicesMut ?? choices
+                    entry["Content"] = content
+                    displays[key] = entry
+                }
+                plist["Displays"] = displays
+                didSet = true
+            }
+            guard didSet else { return }
+            guard let outData = try? PropertyListSerialization.data(fromPropertyList: plist, format: format, options: 0) else { return }
+            do {
+                try outData.write(to: plistURL)
+            } catch {
+                return
+            }
+            runKillAll("WallpaperAgent")
+        } else if ver.majorVersion == 13 {
+            // macOS 13 (Ventura): Dock desktoppicture.db
+            let dbPath = "\(home)/Library/Application Support/Dock/desktoppicture.db"
+            guard FileManager.default.fileExists(atPath: dbPath) else { return }
+            let escaped = imagePath.replacingOccurrences(of: "'", with: "''")
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+            proc.arguments = [dbPath, "UPDATE data SET value = '\(escaped)';"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 {
+                runKillAll("Dock")
+            }
+        }
+    }
+    
+    private static func runKillAll(_ name: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        proc.arguments = [name]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
     }
     
     /// Set wallpaper for all monitors
-    public static func setWallpaperForAll(imagePath: String, fitStyle: FitStyle = .fill) throws {
+    public static func setWallpaperForAll(imagePath: String, fitStyle: FitStyle = .fill, syncAllSpaces: Bool = false) throws {
         let monitors = getMonitors()
         var errors: [String] = []
         
         for monitor in monitors {
             do {
-                try setWallpaper(for: monitor.id, imagePath: imagePath, fitStyle: fitStyle)
+                try setWallpaper(for: monitor.id, imagePath: imagePath, fitStyle: fitStyle, syncAllSpaces: syncAllSpaces)
             } catch {
                 errors.append("Screen \(monitor.index): \(error)")
             }
@@ -237,4 +398,3 @@ public enum MonitorError: Error, CustomStringConvertible {
         }
     }
 }
-

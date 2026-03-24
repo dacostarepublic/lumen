@@ -16,6 +16,20 @@ A terminal-first wallpaper manager for macOS. Inspired by [Irvue](https://irvue.
 
 ## Installation
 
+### Homebrew (Custom Tap)
+
+```bash
+brew tap dacostarepublic/tap
+brew install lumen
+```
+
+Upgrade with:
+
+```bash
+brew update
+brew upgrade lumen
+```
+
 ### Build from Source
 
 ```bash
@@ -218,6 +232,7 @@ The configuration file is stored at `~/.lumen-config` by default (JSON format).
   "blacklist_strategy": "list",
   "blacklist_folder": null,
   "log_level": "info",
+  "apply_all_spaces": false,
   "screens": {}
 }
 ```
@@ -235,6 +250,7 @@ The configuration file is stored at `~/.lumen-config` by default (JSON format).
 | `blacklist_strategy` | How to handle blacklisted images | `list` (record only) or `folder` (move files) |
 | `blacklist_folder` | Folder to move blacklisted images (if strategy is `folder`) | Path |
 | `log_level` | Logging verbosity | `debug`, `info`, `warn`, `error` |
+| `apply_all_spaces` | Best-effort sync to all desktop spaces (uses private macOS stores) | `true`, `false` (default `false`) |
 | `screens` | Per-screen configuration overrides | Object (see below) |
 
 ### Per-Screen Configuration
@@ -363,6 +379,13 @@ swift test
 xcodebuild test -scheme lumen
 ```
 
+Using the included `Makefile`:
+
+```bash
+make test
+make ci
+```
+
 ## Troubleshooting
 
 ### "No images found"
@@ -383,6 +406,7 @@ macOS may require permission for Lumen to change your desktop wallpaper. This is
 - Run `lumen status` to verify the configuration
 - Try `lumen update --dry-run` to see what would happen
 - Check if all images are blacklisted
+- If only the active desktop space updates, set `"apply_all_spaces": true` (best effort and may vary by macOS version)
 
 ### Finding screen IDs
 
@@ -395,7 +419,10 @@ lumen status
 
 MIT License - see LICENSE file for details.
 
+## Releasing
+
+See `docs/RELEASING.md` for the release checklist and Homebrew tap update steps.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
-

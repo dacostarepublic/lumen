@@ -26,6 +26,7 @@ DerivedData/
 *.o
 *.a
 *.dylib
+dist/
 
 # Test output
 .test-results/
@@ -33,4 +34,3 @@ DerivedData/
 # Local development
 .env
 *.local
-

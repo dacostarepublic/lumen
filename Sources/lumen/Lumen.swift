@@ -16,7 +16,7 @@ struct Lumen: ParsableCommand {
             Configuration is stored in ~/.lumen-config (JSON format).
             Run 'lumen config init' to create a default configuration.
             """,
-        version: "1.0.0",
+        version: "1.1.0",
         subcommands: [
             Update.self,
             Set.self,
@@ -54,6 +54,10 @@ struct ScreenSelector: ParsableArguments {
     
     /// Resolve to a MonitorInfo
     func resolveMonitor() throws -> MonitorInfo {
+        if screen != nil && screenId != nil {
+            throw ValidationError("Specify only one of --screen or --screen-id")
+        }
+
         let monitors = MonitorManager.getMonitors()
         
         if monitors.isEmpty {
@@ -68,6 +72,9 @@ struct ScreenSelector: ParsableArguments {
         }
         
         if let index = screen {
+            if index <= 0 {
+                throw ValidationError("--screen must be a positive integer")
+            }
             guard let monitor = MonitorManager.findMonitor(byIndex: index) else {
                 throw MonitorError.monitorNotFoundByIndex(index)
             }
@@ -136,7 +143,7 @@ struct Update: ParsableCommand {
                 alreadySelected.insert(selected)
                 
                 if !dryRun {
-                    try MonitorManager.setWallpaper(for: monitor.id, imagePath: selected, fitStyle: fitStyle)
+                    try MonitorManager.setWallpaper(for: monitor.id, imagePath: selected, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
                     try stateManager.recordWallpaperChange(screenId: monitor.id, path: selected)
                 }
                 
@@ -154,6 +161,9 @@ struct Update: ParsableCommand {
                     print("[\(monitor.index)] \(monitor.name): \(selected)")
                 }
             } catch {
+                if global.verbose && !global.json {
+                    printError("[\(monitor.index)] \(monitor.name): \(error)")
+                }
                 results.append(UpdateResult(
                     screenIndex: monitor.index,
                     screenId: monitor.id,
@@ -165,6 +175,8 @@ struct Update: ParsableCommand {
                 ))
             }
         }
+
+        let hadFailures = results.contains { !$0.success }
         
         if global.json {
             let output = UpdateOutput(dryRun: dryRun, results: results)
@@ -184,6 +196,10 @@ struct Update: ParsableCommand {
                     printError("  [\(result.screenIndex)] \(result.screenName): \(result.error ?? "Unknown error")")
                 }
             }
+        }
+
+        if hadFailures {
+            throw ExitCode.failure
         }
     }
 }
@@ -238,7 +254,7 @@ struct Set: ParsableCommand {
         let expandedPath = (file as NSString).expandingTildeInPath
         
         // Set wallpaper
-        try MonitorManager.setWallpaper(for: monitor.id, imagePath: expandedPath, fitStyle: fitStyle)
+        try MonitorManager.setWallpaper(for: monitor.id, imagePath: expandedPath, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
         try stateManager.recordWallpaperChange(screenId: monitor.id, path: expandedPath)
         
         if global.json {
@@ -377,12 +393,11 @@ struct Prev: ParsableCommand {
         
         // Verify file still exists
         guard FileManager.default.fileExists(atPath: previousPath) else {
-            printError("Previous wallpaper no longer exists: \(previousPath)")
-            return
+            throw MonitorError.imageNotFound(path: previousPath)
         }
         
         let fitStyle = config.fitStyleForScreen(monitor.id)
-        try MonitorManager.setWallpaper(for: monitor.id, imagePath: previousPath, fitStyle: fitStyle)
+        try MonitorManager.setWallpaper(for: monitor.id, imagePath: previousPath, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
         try stateManager.recordWallpaperChange(screenId: monitor.id, path: previousPath)
         
         if global.json {
@@ -421,8 +436,7 @@ struct Favorite: ParsableCommand {
         // Get current wallpaper
         let currentPath = monitor.currentWallpaper ?? stateManager.getCurrentWallpaper(for: monitor.id)
         guard let imagePath = currentPath else {
-            printError("No current wallpaper known for screen \(monitor.index)")
-            return
+            throw ValidationError("No current wallpaper known for screen \(monitor.index)")
         }
         
         // Check if already favorited
@@ -473,8 +487,7 @@ struct Ban: ParsableCommand {
         // Get current wallpaper
         let currentPath = monitor.currentWallpaper ?? stateManager.getCurrentWallpaper(for: monitor.id)
         guard let imagePath = currentPath else {
-            printError("No current wallpaper known for screen \(monitor.index)")
-            return
+            throw ValidationError("No current wallpaper known for screen \(monitor.index)")
         }
         
         // Check if already blacklisted
@@ -504,7 +517,7 @@ struct Ban: ParsableCommand {
             let selector = ImageSelector(config: config, stateManager: stateManager)
             let nextImage = try selector.selectNext(for: monitor.id, dryRun: false)
             let fitStyle = config.fitStyleForScreen(monitor.id)
-            try MonitorManager.setWallpaper(for: monitor.id, imagePath: nextImage, fitStyle: fitStyle)
+            try MonitorManager.setWallpaper(for: monitor.id, imagePath: nextImage, fitStyle: fitStyle, syncAllSpaces: config.applyAllSpaces)
             try stateManager.recordWallpaperChange(screenId: monitor.id, path: nextImage)
             
             if !global.json {
@@ -557,6 +570,7 @@ struct ConfigInit: ParsableCommand {
         } catch ConfigError.fileExists(let path) {
             printError("Configuration already exists at: \(path)")
             print("Use --force to overwrite")
+            throw ExitCode.failure
         }
     }
 }
@@ -622,6 +636,10 @@ struct History: ParsableCommand {
     var limit: Int = 20
     
     mutating func run() throws {
+        if limit <= 0 {
+            throw ValidationError("--limit must be greater than 0")
+        }
+
         let config = try loadConfig(global.config)
         let stateManager = try StateManager(config: config)
         
@@ -679,6 +697,10 @@ struct List: ParsableCommand {
     var blacklist: Bool = false
     
     mutating func run() throws {
+        if favorites == blacklist {
+            throw ValidationError("Specify exactly one of --favorites or --blacklist")
+        }
+
         let config = try loadConfig(global.config)
         let stateManager = try StateManager(config: config)
         
@@ -726,8 +748,6 @@ struct List: ParsableCommand {
                     }
                 }
             }
-        } else {
-            print("Specify --favorites or --blacklist")
         }
     }
 }
@@ -739,7 +759,9 @@ func loadConfig(_ customPath: String?) throws -> LumenConfig {
 }
 
 func printError(_ message: String) {
-    FileHandle.standardError.write("Error: \(message)\n".data(using: .utf8)!)
+    if let data = "Error: \(message)\n".data(using: .utf8) {
+        FileHandle.standardError.write(data)
+    }
 }
 
 func jsonString(from dict: [String: Any]) throws -> String {
@@ -753,4 +775,3 @@ extension FitStyle: ExpressibleByArgument {
         self.init(rawValue: argument.lowercased())
     }
 }
-
