@@ -3,7 +3,7 @@ class Lumen < Formula
   homepage "https://github.com/dacostarepublic/lumen"
   version "1.1.0"
   url "https://github.com/dacostarepublic/lumen/releases/download/v1.1.0/lumen-v1.1.0-macos.tar.gz"
-  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
+  sha256 "b8f68df558306d505cdfbeedcc451ac9ae2eb5d20ff8bb557638de7c23407fca"
   license "MIT"
 
   depends_on macos: :ventura
